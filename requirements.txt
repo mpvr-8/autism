@@ -10,6 +10,11 @@ tqdm
 torch
 torchvision
 
+# Qwen language model support
+transformers
+accelerate
+safetensors
+
 # Web app / tunneling
 streamlit
 pyngrok
