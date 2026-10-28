@@ -10,8 +10,9 @@ tqdm
 torch
 torchvision
 
-# Qwen language model support
-transformers
+# Hugging Face model downloads + Qwen language model support
+huggingface_hub
+transformers>=4.51.0
 accelerate
 safetensors
 
