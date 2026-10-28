@@ -780,13 +780,32 @@ def page_reports():
         )
         return
 
-    st.json(report)
+    # Present the report as a readable table rather than a raw JSON block.
+    report_rows = [
+        {"Field": "Predicted class", "Value": report.get("predicted_class", "—")},
+        {"Field": "Confidence (%)", "Value": report.get("confidence_percent", "—")},
+        {"Field": "Model", "Value": report.get("model", "—")},
+        {"Field": "Evaluated at", "Value": report.get("evaluated_at", "—")},
+        {"Field": "Research use only", "Value": report.get("research_use_only", "—")},
+    ]
+
+    st.subheader("Prediction summary")
+    st.dataframe(pd.DataFrame(report_rows), width="stretch", hide_index=True)
+
+    class_probabilities = report.get("class_probabilities", {})
+    if class_probabilities:
+        st.subheader("Class probabilities")
+        probability_table = pd.DataFrame(
+            [{"Class": label, "Score (%)": score}
+             for label, score in class_probabilities.items()]
+        )
+        st.dataframe(probability_table, width="stretch", hide_index=True)
 
     st.download_button(
-        "Download report JSON",
-        data=json.dumps(report, indent=2),
-        file_name="py18_prediction_report.json",
-        mime="application/json",
+        "Download report as CSV",
+        data=pd.DataFrame(report_rows).to_csv(index=False),
+        file_name="py18_prediction_report.csv",
+        mime="text/csv",
         type="primary",
     )
 
