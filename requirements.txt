@@ -1,22 +1,20 @@
-# Streamlit Community Cloud deployment dependencies
+# Hugging Face Spaces — Gradio deployment
+gradio==5.49.1
 
-# Core data science
+# Core data / image processing
 numpy<2.0
 pandas
-scikit-learn
-matplotlib
 Pillow
 tqdm
+scikit-learn
+matplotlib
 
-# Matched deep-learning versions
+# Matched PyTorch stack
 torch==2.6.0
 torchvision==0.21.0
 
-# Hugging Face model downloads and Qwen3 support
+# Hugging Face model downloads and Qwen3
 huggingface_hub>=0.30.0,<1.0
 transformers==4.51.3
 accelerate>=1.6.0,<2.0
 safetensors
-
-# Web app
-streamlit
