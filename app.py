@@ -1,910 +1,359 @@
-
-import io
 import json
 import os
+import tempfile
 import threading
 from datetime import datetime
+from functools import lru_cache
 
+import gradio as gr
 import pandas as pd
-import streamlit as st
 import torch
 import torch.nn as nn
 import torchvision.models as tv_models
-from torchvision import transforms
 from PIL import Image, ImageOps
+from torchvision import transforms
 
-
-# =========================================================
-# CONFIGURATION
-# =========================================================
-
-st.set_page_config(
-    page_title="PY18 Research Console",
-    page_icon="🧪",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-DENSENET_REPO_ID = os.getenv(
-    "DENSENET_REPO_ID", "Mpvr/autism-densenet169"
-)
-QWEN_MODEL_ID = os.getenv(
-    "QWEN_MODEL_ID", "Mpvr/autism-qwen3-1.7b"
-)
+DENSENET_REPO_ID = os.getenv("DENSENET_REPO_ID", "Mpvr/autism-densenet169")
+QWEN_MODEL_ID = os.getenv("QWEN_MODEL_ID", "Mpvr/autism-qwen3-1.7b")
 HF_TOKEN = os.getenv("HF_TOKEN") or None
-
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 DEFAULT_CLASS_NAMES = ["Autistic", "Non-autistic"]
-
 IMAGE_TRANSFORM = transforms.Compose([
     transforms.Resize((224, 224)),
     transforms.ToTensor(),
-    transforms.Normalize(
-        mean=[0.485, 0.456, 0.406],
-        std=[0.229, 0.224, 0.225],
-    ),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
 ])
-
-PAGES = [
-    "Submissions",
-    "Compare experiments",
-    "Research assistant",
-    "Reports",
-    "Knowledge store",
+PRELIMINARY_MODELS = [
+    ("DenseNet-169", 85.5), ("RegNet X-400MF", 84.5),
+    ("MobileNet V3 Large", 83.5), ("DenseNet-121", 83.5),
+    ("MobileNet V2", 81.0), ("ViT-B/16", 77.0), ("AlexNet", 50.0),
 ]
 
-
-# =========================================================
-# UI STYLE
-# =========================================================
-
-st.markdown(
-    """
-    <style>
-    :root {
-        color-scheme: light dark;
-    }
-
-    .stApp {
-        background: var(--st-background-color, transparent);
-        color: var(--st-text-color, inherit);
-    }
-
-    [data-testid="stAppViewContainer"],
-    [data-testid="stHeader"],
-    [data-testid="stMain"] {
-        background: transparent;
-        color: inherit;
-    }
-
-    [data-testid="stMain"] .block-container {
-        max-width: 1500px;
-        padding-top: 2rem;
-        padding-bottom: 3rem;
-    }
-
-    .stApp h1, .stApp h2, .stApp h3,
-    .stApp h4, .stApp h5, .stApp h6 {
-        color: var(--st-heading-color, var(--st-text-color, inherit));
-        font-weight: 700;
-        overflow-wrap: anywhere;
-    }
-
-    .stApp p, .stApp li, .stApp label {
-        color: var(--st-text-color, inherit);
-        overflow-wrap: anywhere;
-    }
-
-    .stApp a {
-        color: var(--st-primary-color, #3984ff);
-    }
-
-    [data-testid="stSidebar"] {
-        background: var(
-            --st-secondary-background-color,
-            var(--st-background-color, transparent)
-        );
-        border-right: 1px solid var(--st-border-color, transparent);
-    }
-
-    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"],
-    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] p,
-    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h1,
-    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h2,
-    [data-testid="stSidebar"] [data-testid="stMarkdownContainer"] h3,
-    [data-testid="stSidebar"] label {
-        color: var(--st-text-color, inherit);
-    }
-
-    .stButton > button,
-    .stDownloadButton > button,
-    [data-testid="stFormSubmitButton"] > button {
-        border-radius: 9px;
-        font-weight: 600;
-        min-height: 2.6rem;
-        transition: border-color 0.15s ease;
-    }
-
-    .stButton > button:hover,
-    .stDownloadButton > button:hover,
-    [data-testid="stFormSubmitButton"] > button:hover {
-        border-color: var(--st-primary-color, #3984ff);
-    }
-
-    .stButton > button:focus-visible,
-    .stDownloadButton > button:focus-visible,
-    [data-testid="stFormSubmitButton"] > button:focus-visible {
-        outline: 2px solid var(--st-primary-color, #3984ff);
-        outline-offset: 3px;
-    }
-
-    .stApp input,
-    .stApp textarea,
-    .stApp [data-baseweb="select"] > div,
-    .stApp [data-baseweb="input"] > div,
-    .stApp [data-baseweb="textarea"] > div {
-        color: var(--st-text-color, inherit);
-        border-color: var(--st-border-color, #888);
-    }
-
-    .stApp input::placeholder,
-    .stApp textarea::placeholder {
-        color: var(--st-text-color, inherit);
-        opacity: 0.7;
-    }
-
-    div[data-testid="stMetric"] {
-        background: var(
-            --st-secondary-background-color,
-            var(--st-background-color, transparent)
-        );
-        color: var(--st-text-color, inherit);
-        border: 1px solid var(--st-border-color, #888);
-        border-radius: 12px;
-        padding: 16px;
-        min-width: 0;
-    }
-
-    div[data-testid="stMetric"] label,
-    div[data-testid="stMetric"] [data-testid="stMetricLabel"],
-    div[data-testid="stMetric"] [data-testid="stMetricValue"],
-    div[data-testid="stMetric"] [data-testid="stMetricDelta"] {
-        color: var(--st-text-color, inherit);
-        overflow-wrap: anywhere;
-    }
-
-    [data-testid="stChatMessage"] {
-        border: 1px solid var(--st-border-color, transparent);
-        border-radius: 12px;
-        padding: 1rem;
-        color: var(--st-text-color, inherit);
-    }
-
-    [data-testid="stChatMessage"] p {
-        color: var(--st-text-color, inherit);
-    }
-
-    [data-testid="stDataFrame"],
-    [data-testid="stTable"] {
-        border-color: var(--st-border-color, #888);
-    }
-
-    [data-testid="stAlert"] {
-        border-radius: 10px;
-    }
-
-    .stApp pre,
-    .stApp code {
-        border-radius: 8px;
-        overflow-wrap: anywhere;
-        white-space: pre-wrap;
-    }
-
-    [data-testid="stFileUploader"] {
-        border-radius: 10px;
-    }
-
-    [data-testid="stFileUploader"] section {
-        border-color: var(--st-border-color, #888);
-    }
-
-    .stApp hr {
-        border-color: var(--st-border-color, #888);
-        opacity: 0.65;
-    }
-
-    .stApp img {
-        max-width: 100%;
-        height: auto;
-        border-radius: 8px;
-    }
-
-    @media (max-width: 768px) {
-        [data-testid="stMain"] .block-container {
-            padding: 1rem 0.8rem 2rem;
-        }
-
-        div[data-testid="stMetric"] {
-            padding: 12px;
-        }
-    }
-
-    @media (prefers-reduced-motion: reduce) {
-        *, *::before, *::after {
-            transition: none !important;
-            animation: none !important;
-            scroll-behavior: auto !important;
-        }
-    }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-
-
-# =========================================================
-# SESSION STATE
-# =========================================================
-
-if "page" not in st.session_state:
-    st.session_state.page = "Submissions"
-
-if "messages" not in st.session_state:
-    st.session_state.messages = [
-        {
-            "role": "assistant",
-            "content": (
-                "Welcome to PY18 Research Console. "
-                "I can help discuss model evaluation, "
-                "research methodology, and reporting."
-            ),
-        }
-    ]
-
-if "prediction" not in st.session_state:
-    st.session_state.prediction = None
-
-if "report" not in st.session_state:
-    st.session_state.report = None
-
-
-# =========================================================
-# CHECKPOINT HELPERS
-# =========================================================
-
+# Models are loaded only when a user opens the relevant feature.
 def find_densenet_checkpoint():
-    """Download a DenseNet checkpoint from the configured Hugging Face repo."""
     from huggingface_hub import hf_hub_download
-
     errors = []
     for filename in ("best_densenet169.pth", "densenet169_best.pth"):
         try:
-            return hf_hub_download(
-                repo_id=DENSENET_REPO_ID,
-                filename=filename,
-                token=HF_TOKEN,
-            )
+            return hf_hub_download(repo_id=DENSENET_REPO_ID, filename=filename, token=HF_TOKEN)
         except Exception as exc:
             errors.append(f"{filename}: {type(exc).__name__}: {exc}")
-
     raise FileNotFoundError(
-        "Could not download a DenseNet checkpoint from "
-        f"{DENSENET_REPO_ID}. Checked both expected filenames. "
-        + " | ".join(errors)
+        f"Could not find a DenseNet checkpoint in {DENSENET_REPO_ID}. " + " | ".join(errors)
     )
 
 
 def extract_state_dict(checkpoint):
     if not isinstance(checkpoint, dict):
         raise ValueError("Unsupported checkpoint format.")
-
     for key in ("model_state_dict", "state_dict", "model", "weights"):
         value = checkpoint.get(key)
         if isinstance(value, dict) and value:
             checkpoint = value
             break
-
-    cleaned = {}
-    for key, value in checkpoint.items():
-        if isinstance(key, str):
-            cleaned[key.removeprefix("module.")] = value
-
-    return cleaned
+    return {key.removeprefix("module."): value for key, value in checkpoint.items() if isinstance(key, str)}
 
 
-def find_checkpoint_class_names(checkpoint):
+def checkpoint_class_names(checkpoint):
     if not isinstance(checkpoint, dict):
         return None
-
     for key in ("class_names", "classes", "label_classes"):
         value = checkpoint.get(key)
         if isinstance(value, (list, tuple)) and value:
             return [str(item) for item in value]
-
     encoder = checkpoint.get("label_encoder")
     if encoder is not None and hasattr(encoder, "classes_"):
         return [str(item) for item in encoder.classes_]
-
     return None
 
 
-# =========================================================
-# LOAD DENSENET-169
-# =========================================================
-
-@st.cache_resource(show_spinner="Loading DenseNet-169...")
+@lru_cache(maxsize=1)
 def load_densenet():
     checkpoint_path = find_densenet_checkpoint()
-
-    if checkpoint_path is None:
-        raise FileNotFoundError(
-            "No DenseNet-169 checkpoint could be downloaded. "
-            "Check the Hugging Face repository and uploaded checkpoint filenames."
-        )
-
-    checkpoint = torch.load(
-        checkpoint_path,
-        map_location="cpu",
-        weights_only=True,
-    )
-
-    saved_class_names = find_checkpoint_class_names(checkpoint)
+    checkpoint = torch.load(checkpoint_path, map_location="cpu", weights_only=True)
+    saved_names = checkpoint_class_names(checkpoint)
     state_dict = extract_state_dict(checkpoint)
-
     classifier_weight = state_dict.get("classifier.weight")
     if classifier_weight is None:
-        raise ValueError(
-            "The checkpoint does not contain the expected "
-            "DenseNet classifier weights."
-        )
-
+        raise ValueError("Checkpoint is missing DenseNet classifier weights.")
     num_classes = int(classifier_weight.shape[0])
-
     model = tv_models.densenet169(weights=None)
     model.classifier = nn.Linear(model.classifier.in_features, num_classes)
     model.load_state_dict(state_dict, strict=True)
-    model = model.to(DEVICE)
-    model.eval()
-
-    # Warm-up pass so the first real prediction is fast.
+    model = model.to(DEVICE).eval()
     with torch.inference_mode():
         model(torch.zeros(1, 3, 224, 224, device=DEVICE))
-
-    if saved_class_names and len(saved_class_names) == num_classes:
-        class_names = saved_class_names
+    if saved_names and len(saved_names) == num_classes:
+        names = saved_names
     elif len(DEFAULT_CLASS_NAMES) == num_classes:
-        class_names = DEFAULT_CLASS_NAMES
+        names = DEFAULT_CLASS_NAMES
     else:
-        class_names = [f"Class {i}" for i in range(num_classes)]
-
-    return model, class_names, num_classes
+        names = [f"Class {i}" for i in range(num_classes)]
+    return model, names, num_classes
 
 
 def predict_image(image):
+    if image is None:
+        raise ValueError("Upload an image first.")
+    image = ImageOps.exif_transpose(image).convert("RGB")
     model, class_names, num_classes = load_densenet()
-
     tensor = IMAGE_TRANSFORM(image).unsqueeze(0).to(DEVICE)
-
     with torch.inference_mode():
-        logits = model(tensor)
-        probabilities = torch.softmax(logits, dim=1)[0]
-
-    predicted_index = int(torch.argmax(probabilities).item())
-
+        probabilities = torch.softmax(model(tensor), dim=1)[0]
+    index = int(torch.argmax(probabilities).item())
     return {
-        "predicted_class": class_names[predicted_index],
-        "confidence_percent": round(
-            float(probabilities[predicted_index].item()) * 100, 2
-        ),
+        "predicted_class": class_names[index],
+        "confidence_percent": round(float(probabilities[index].item()) * 100, 2),
         "class_probabilities": {
             class_names[i]: round(float(probabilities[i].item()) * 100, 2)
             for i in range(num_classes)
         },
         "model": "DenseNet-169",
+        "evaluated_at": datetime.now().isoformat(timespec="seconds"),
         "research_use_only": True,
     }
 
 
-def run_prediction(image):
-    """Run DenseNet on an image and store the result in session state."""
-
-    try:
-        with st.spinner("Running image classification..."):
-            result = predict_image(image)
-
-    except FileNotFoundError:
-        st.error(
-            "DenseNet-169 checkpoint not found. "
-            "Check the Hugging Face repository and checkpoint filenames."
-        )
-        return
-
-    except torch.cuda.OutOfMemoryError:
-        torch.cuda.empty_cache()
-        st.error("GPU memory was insufficient to run prediction.")
-        return
-
-    except Exception as exc:
-        st.error(
-            f"Prediction failed: {type(exc).__name__}: {exc}"
-        )
-        return
-
-    st.session_state.prediction = result
-    st.session_state.report = {
-        **result,
-        "evaluated_at": datetime.now().isoformat(timespec="seconds"),
-    }
-    st.rerun()
+_qwen_lock = threading.Lock()
+_qwen_holder = {"tokenizer": None, "model": None, "error": None}
 
 
-# =========================================================
-# QWEN3-1.7B (BACKGROUND LOAD + STREAMING)
-# =========================================================
-
-@st.cache_resource
-def get_qwen_holder():
-    holder = {
-        "ready": threading.Event(),
-        "tokenizer": None,
-        "model": None,
-        "error": None,
-    }
-
-    def _load():
+def get_qwen():
+    if _qwen_holder["model"] is not None:
+        return _qwen_holder["tokenizer"], _qwen_holder["model"]
+    with _qwen_lock:
+        if _qwen_holder["model"] is not None:
+            return _qwen_holder["tokenizer"], _qwen_holder["model"]
+        if _qwen_holder["error"] is not None:
+            raise RuntimeError(str(_qwen_holder["error"]))
         try:
             from transformers import AutoTokenizer, AutoModelForCausalLM
-
-            # Download/cache the model files from Hugging Face Hub instead of
-            # expecting the Kaggle-only /kaggle/input path to exist at runtime.
-            tokenizer = AutoTokenizer.from_pretrained(
-                QWEN_MODEL_ID,
-                token=HF_TOKEN,
-            )
-
-            use_cuda = torch.cuda.is_available()
-
+            tokenizer = AutoTokenizer.from_pretrained(QWEN_MODEL_ID, token=HF_TOKEN)
             model = AutoModelForCausalLM.from_pretrained(
-                QWEN_MODEL_ID,
-                token=HF_TOKEN,
-                torch_dtype=torch.float16 if use_cuda else torch.float32,
+                QWEN_MODEL_ID, token=HF_TOKEN,
+                torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
                 low_cpu_mem_usage=True,
-            )
-
-            model = model.to(DEVICE)
-            model.eval()
-
-            holder["tokenizer"] = tokenizer
-            holder["model"] = model
-
+            ).to(DEVICE).eval()
+            _qwen_holder.update(tokenizer=tokenizer, model=model)
+            return tokenizer, model
         except Exception as exc:
-            holder["error"] = exc
-
-        finally:
-            holder["ready"].set()
-
-    threading.Thread(target=_load, daemon=True).start()
-
-    return holder
+            _qwen_holder["error"] = exc
+            raise
 
 
-def stream_qwen(holder, question, conversation):
+def answer_question(message, history):
     from transformers import TextIteratorStreamer
-
-    holder["ready"].wait()
-
-    if holder["error"] is not None:
-        raise holder["error"]
-
-    tokenizer = holder["tokenizer"]
-    model = holder["model"]
-
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are a research assistant for an experimental "
-                "image-classification project. Help with PyTorch, "
-                "model evaluation, statistics, and research writing. "
-                "Do not claim that an image prediction is a medical "
-                "diagnosis. Clearly distinguish evidence from "
-                "uncertainty. Do not invent research citations. "
-                "Keep answers concise."
-            ),
-        }
-    ]
-
-    for message in conversation[-4:]:
-        if message["role"] in ("user", "assistant"):
-            messages.append({
-                "role": message["role"],
-                "content": message["content"],
-            })
-
-    messages.append({"role": "user", "content": question})
-
+    tokenizer, model = get_qwen()
+    messages = [{
+        "role": "system",
+        "content": (
+            "You are a research assistant for an experimental image-classification project. "
+            "Help with PyTorch, model evaluation, statistics, and research writing. "
+            "Do not claim image predictions are medical diagnoses. Distinguish evidence from "
+            "uncertainty and do not invent citations. Keep answers concise."
+        ),
+    }]
+    for item in (history or [])[-8:]:
+        if isinstance(item, dict) and item.get("role") in ("user", "assistant"):
+            content = item.get("content", "")
+            if isinstance(content, str) and content.strip():
+                messages.append({"role": item["role"], "content": content})
+    messages.append({"role": "user", "content": message})
     prompt = tokenizer.apply_chat_template(
-        messages,
-        tokenize=False,
-        add_generation_prompt=True,
-        enable_thinking=False,
+        messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
     )
-
     inputs = tokenizer(prompt, return_tensors="pt").to(DEVICE)
+    streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True, timeout=180)
 
-    streamer = TextIteratorStreamer(
-        tokenizer,
-        skip_prompt=True,
-        skip_special_tokens=True,
-        timeout=120,
-    )
-
-    generation_kwargs = dict(
-        **inputs,
-        streamer=streamer,
-        max_new_tokens=300,
-        do_sample=False,
-        use_cache=True,
-        pad_token_id=tokenizer.eos_token_id,
-    )
-
-    def _generate():
+    def generate():
         with torch.inference_mode():
-            model.generate(**generation_kwargs)
+            model.generate(
+                **inputs, streamer=streamer, max_new_tokens=300, do_sample=False,
+                use_cache=True, pad_token_id=tokenizer.eos_token_id,
+            )
 
-    threading.Thread(target=_generate, daemon=True).start()
-
+    threading.Thread(target=generate, daemon=True).start()
+    response = ""
     for piece in streamer:
-        yield piece
+        response += piece
+        yield response
 
 
-# =========================================================
-# Keep startup lightweight: load models only when their features are used.
-QWEN_HOLDER = None
+def make_report_files(report):
+    if not report:
+        return None, None
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".json", prefix="prediction_", delete=False, encoding="utf-8") as jf:
+        json.dump(report, jf, indent=2)
+        json_path = jf.name
+    rows = [
+        ["Predicted class", report.get("predicted_class", "—")],
+        ["Confidence (%)", report.get("confidence_percent", "—")],
+        ["Model", report.get("model", "—")],
+        ["Evaluated at", report.get("evaluated_at", "—")],
+        ["Research use only", report.get("research_use_only", "—")],
+    ]
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".csv", prefix="research_report_", delete=False, encoding="utf-8") as cf:
+        pd.DataFrame(rows, columns=["Field", "Value"]).to_csv(cf.name, index=False)
+        csv_path = cf.name
+    return json_path, csv_path
 
 
-# =========================================================
-# PAGE FUNCTIONS
-# =========================================================
-
-def page_submissions():
-    st.title("Image submission")
-    st.caption(
-        "Upload a new image to run the saved DenseNet-169 classifier. "
-        "No dataset ID is required."
-    )
-
-    left, right = st.columns([1.1, 0.9], gap="large")
-
-    with left:
-        render_upload_panel()
-
-    with right:
-        render_prediction_panel()
-
-    st.divider()
-    st.subheader("Research pipeline")
-    st.markdown(
-        "📤 Image upload  →  ⚙️ Preprocessing  →  "
-        "🧠 DenseNet-169  →  📊 Prediction scores"
-    )
-
-
-def render_upload_panel():
-    st.subheader("Test a new image")
-
-    uploaded = st.file_uploader(
-        "Choose a JPG, JPEG, or PNG image",
-        type=["jpg", "jpeg", "png"],
-        key="submission_image",
-    )
-
-    if uploaded is None:
-        st.info(
-            "Upload any supported image, including an image "
-            "that was not part of your original dataset."
-        )
-        return
-
+def run_prediction_ui(image):
     try:
-        image = Image.open(io.BytesIO(uploaded.getvalue()))
-        image = ImageOps.exif_transpose(image).convert("RGB")
-    except Exception:
-        st.error("Unable to read this image. Try a valid JPG or PNG.")
-        return
-
-    st.image(image, caption="Uploaded image preview", width="stretch")
-
-    clicked = st.button(
-        "Predict with DenseNet-169",
-        type="primary",
-        width="stretch",
-    )
-
-    if clicked:
-        run_prediction(image)
-
-
-def render_prediction_panel():
-    st.subheader("Latest prediction")
-
-    result = st.session_state.prediction
-
-    if not result:
-        st.info(
-            "Upload an image and run a prediction "
-            "to see the results here."
+        result = predict_image(image)
+        scores = [[label, score] for label, score in result["class_probabilities"].items()]
+        json_path, csv_path = make_report_files(result)
+        summary = (
+            "### Prediction complete\n"
+            f"**Predicted class:** {result['predicted_class']}  \n"
+            f"**Model confidence:** {result['confidence_percent']:.2f}%  \n"
+            f"**Model:** DenseNet-169  \n"
+            f"**Evaluated:** {result['evaluated_at']}"
         )
+        return summary, result, scores, json_path, csv_path
+    except Exception as exc:
+        error = f"### Prediction failed\n{type(exc).__name__}: {exc}"
+        return error, {}, [], None, None
+
+
+def chat_submit(message, history):
+    if not message or not message.strip():
+        yield history or [], ""
         return
-
-    st.metric("Predicted class", result["predicted_class"])
-    st.metric("Model confidence", f'{result["confidence_percent"]:.2f}%')
-
-    st.caption(
-        "Confidence is the model's softmax score, "
-        "not a measure of clinical certainty."
-    )
-
-    st.markdown("**Class scores**")
-
-    scores = pd.DataFrame([
-        {"Class": label, "Score (%)": score}
-        for label, score in result["class_probabilities"].items()
-    ])
-
-    st.dataframe(scores, width="stretch", hide_index=True)
-
-    st.download_button(
-        "Export prediction",
-        data=json.dumps(result, indent=2),
-        file_name="prediction_result.json",
-        mime="application/json",
-        width="stretch",
-    )
+    history = list(history or [])
+    prior_history = history[:]
+    history.append({"role": "user", "content": message})
+    yield history, ""
+    history.append({"role": "assistant", "content": "Loading Qwen3 and generating a response…"})
+    yield history, ""
+    try:
+        partial = ""
+        for partial in answer_question(message, prior_history):
+            history[-1] = {"role": "assistant", "content": partial}
+            yield history, ""
+        if not partial.strip():
+            history[-1] = {"role": "assistant", "content": "The model returned an empty response."}
+            yield history, ""
+    except Exception as exc:
+        history[-1] = {
+            "role": "assistant",
+            "content": f"Qwen could not respond ({type(exc).__name__}: {exc}). Check Space logs and available memory.",
+        }
+        yield history, ""
 
 
-def page_compare():
-    st.title("Experiment comparison")
-    st.caption("Previously supplied preliminary accuracy results.")
-
-    models = [
-        ("DenseNet-169", 85.5),
-        ("RegNet X-400MF", 84.5),
-        ("MobileNet V3 Large", 83.5),
-        ("DenseNet-121", 83.5),
-        ("MobileNet V2", 81.0),
-        ("ViT-B/16", 77.0),
-        ("AlexNet", 50.0),
+def search_records(query):
+    records = [
+        ["DenseNet-169 checkpoint", "Model", f"Hugging Face repo: {DENSENET_REPO_ID}"],
+        ["Qwen3 1.7B", "Language model", f"Hugging Face repo: {QWEN_MODEL_ID}"],
+        ["Dataset audit", "Data quality", "Not connected"],
     ]
+    if query and query.strip():
+        q = query.strip().lower()
+        records = [row for row in records if any(q in str(cell).lower() for cell in row)]
+    return records
 
-    top_columns = st.columns(4)
-    for index, (name, accuracy) in enumerate(models[:4]):
-        with top_columns[index]:
-            st.metric(name, f"{accuracy:.2f}%")
 
-    bottom_columns = st.columns(3)
-    for index, (name, accuracy) in enumerate(models[4:]):
-        with bottom_columns[index]:
-            st.metric(name, f"{accuracy:.2f}%")
+CSS = r"""
+:root { --ink:#172033; --line:#e2e8f0; --canvas:#f5f7fb; }
+.gradio-container { max-width:1480px !important; margin:0 auto !important; background:var(--canvas) !important; color:var(--ink) !important; }
+body,.gradio-container { font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif !important; }
+#hero { padding:25px 28px 23px; border:1px solid var(--line); border-radius:18px; background:linear-gradient(120deg,#fff 0%,#f3f6ff 72%,#eef2ff 100%); margin-bottom:16px; }
+#brandline { color:#315efb; font-size:12px; font-weight:800; letter-spacing:.15em; text-transform:uppercase; margin-bottom:8px; }
+#hero h1 { font-size:clamp(26px,3vw,38px) !important; line-height:1.12 !important; letter-spacing:-.035em; margin:0 0 9px !important; color:#172033 !important; }
+#hero p { color:#5b667b !important; margin:0 !important; font-size:14px; }
+.pill-row { display:flex; flex-wrap:wrap; gap:8px; margin-top:17px; }
+.pill { display:inline-flex; padding:6px 10px; border-radius:999px; border:1px solid #dce4f5; background:#fff; color:#475569; font-size:11px; font-weight:700; }
+.pill.blue { background:#edf2ff; border-color:#d9e2ff; color:#315efb; }
+#main-tabs { border:1px solid var(--line); background:#fff; border-radius:16px; padding:12px 16px 18px; box-shadow:0 5px 24px rgba(22,34,58,.035); }
+#main-tabs button[role=tab] { border-radius:10px !important; font-weight:650 !important; padding:11px 14px !important; }
+#main-tabs button[role=tab][aria-selected=true] { background:#edf2ff !important; color:#244de2 !important; border:1px solid #dce5ff !important; }
+.panel { border:1px solid var(--line); border-radius:14px; background:#fff; padding:18px; }
+.section-title { font-size:18px; font-weight:750; color:#172033; margin-bottom:4px; }
+.section-subtitle { color:#69758a; font-size:13px; margin-bottom:16px; }
+#footer-note { color:#778196; font-size:12px; text-align:center; padding:14px 0 4px; }
+.gradio-container .block { border-color:var(--line) !important; }
+.gradio-container button.primary { background:#315efb !important; border-color:#315efb !important; }
+.gradio-container button { border-radius:10px !important; }
+.gradio-container input,.gradio-container textarea { border-radius:10px !important; }
+@media(max-width:800px) { #hero{padding:20px 17px} #main-tabs{padding:8px} #main-tabs button[role=tab]{padding:9px 10px !important;font-size:12px} }
+"""
 
-    st.caption(
-        "Verify these preliminary figures against your actual "
-        "evaluation outputs before reporting them as results."
+with gr.Blocks(title="PY18 Research Console", theme=gr.themes.Soft(primary_hue="blue", neutral_hue="slate"), css=CSS) as demo:
+    gr.HTML("""
+    <header id="hero">
+      <div id="brandline">PY18 · Experimental AI Research</div>
+      <h1>Research Console</h1>
+      <p>A focused workspace for image submissions, model comparison, research assistance, and exportable evaluation records.</p>
+      <div class="pill-row">
+        <span class="pill blue">DenseNet-169 · Vision</span>
+        <span class="pill">Qwen3 1.7B · Assistant</span>
+        <span class="pill">Hugging Face model registry</span>
+        <span class="pill">Research use only</span>
+      </div>
+    </header>
+    """)
+    gr.Markdown("⚠️ **Research use only:** predictions are experimental and must not be used to diagnose autism.", elem_classes=["panel"])
+
+    with gr.Tabs(elem_id="main-tabs"):
+        with gr.Tab("Submissions", id="submissions"):
+            gr.HTML('<div class="section-title">Image submission</div><div class="section-subtitle">Upload an image to run the saved DenseNet-169 classifier. No dataset ID is required.</div>')
+            with gr.Row(equal_height=False):
+                with gr.Column(scale=11, elem_classes=["panel"]):
+                    gr.Markdown("### Test a new image\nUpload a JPG, JPEG, or PNG. The image is resized and normalized before inference.")
+                    input_image = gr.Image(label="Image upload", type="pil", height=330)
+                    predict_btn = gr.Button("Predict with DenseNet-169", variant="primary")
+                with gr.Column(scale=9, elem_classes=["panel"]):
+                    gr.Markdown("### Latest prediction")
+                    prediction_summary = gr.Markdown("Upload an image and run a prediction to see results here.")
+                    prediction_json = gr.JSON(label="Prediction details")
+                    score_table = gr.Dataframe(headers=["Class", "Score (%)"], datatype=["str", "number"], label="Class scores", interactive=False)
+                    with gr.Row():
+                        download_json = gr.File(label="Prediction JSON", interactive=False)
+                        download_csv = gr.File(label="Report CSV", interactive=False)
+            gr.Markdown("**Research pipeline**  \n📤 Image upload　→　⚙️ Preprocessing　→　🧠 DenseNet-169　→　📊 Prediction scores")
+
+        with gr.Tab("Compare experiments", id="compare"):
+            gr.HTML('<div class="section-title">Experiment comparison</div><div class="section-subtitle">Preliminary accuracy figures supplied for the prototype. Verify against actual evaluation outputs before publication.</div>')
+            gr.Dataframe(value=[[n, a] for n, a in PRELIMINARY_MODELS], headers=["Model", "Accuracy (%)"], datatype=["str", "number"], label="Accuracy overview", interactive=False)
+            gr.Markdown("### Accuracy overview")
+            gr.BarPlot(value=pd.DataFrame(PRELIMINARY_MODELS, columns=["Model", "Accuracy (%)"]), x="Model", y="Accuracy (%)", title="Model accuracy comparison", y_lim=[0, 100], tooltip=["Model", "Accuracy (%)"])
+
+        with gr.Tab("Research assistant", id="assistant"):
+            gr.HTML('<div class="section-title">Research assistant · Qwen3 1.7B</div><div class="section-subtitle">Language-model assistance for research, evaluation, PyTorch, statistics, and writing.</div>')
+            gr.Markdown("> Qwen is a separate language model; it does not perform the DenseNet image classification.")
+            chatbot = gr.Chatbot(label="Research conversation", type="messages", height=420, show_copy_button=True, placeholder="Ask about PyTorch, evaluation metrics, or research methodology.")
+            with gr.Row():
+                chat_input = gr.Textbox(label="Your question", placeholder="Ask about PyTorch, metrics, or research methodology…", lines=2, scale=8)
+                send_btn = gr.Button("Send", variant="primary", scale=1)
+            clear_btn = gr.Button("Clear conversation", variant="secondary")
+
+        with gr.Tab("Reports", id="reports"):
+            gr.HTML('<div class="section-title">Reports</div><div class="section-subtitle">Download the latest prediction record in JSON or CSV format.</div>')
+            gr.Markdown("Run a prediction on the **Submissions** tab to create a report. Downloads are generated from the current prediction.")
+            report_json = gr.File(label="Latest prediction JSON", interactive=False)
+            report_csv = gr.File(label="Research report CSV", interactive=False)
+
+        with gr.Tab("Knowledge store", id="knowledge"):
+            gr.HTML('<div class="section-title">Knowledge store</div><div class="section-subtitle">Model registry and research artifacts associated with this prototype.</div>')
+            knowledge_search = gr.Textbox(label="Search research records", placeholder="Search by record name, type, or status")
+            knowledge_table = gr.Dataframe(value=search_records(""), headers=["Record", "Type", "Status"], datatype=["str", "str", "str"], label="Research records", interactive=False)
+            gr.Markdown("Dataset audit is not connected in this prototype.")
+
+    gr.HTML('<div id="footer-note">PY18 Research Console · Experimental research prototype · Not validated for clinical diagnosis</div>')
+
+    predict_btn.click(
+        run_prediction_ui, inputs=[input_image],
+        outputs=[prediction_summary, prediction_json, score_table, download_json, download_csv],
     )
-
-    df = pd.DataFrame(models, columns=["Model", "Accuracy (%)"])
-
-    st.subheader("Accuracy overview")
-    st.bar_chart(df.set_index("Model"), y="Accuracy (%)")
-
-
-def page_assistant():
-    global QWEN_HOLDER
-
-    st.title("Research assistant — Qwen3 1.7B")
-
-    if QWEN_HOLDER is None:
-        with st.spinner("Starting Qwen3 1.7B loader..."):
-            QWEN_HOLDER = get_qwen_holder()
-    st.caption(
-        "Local language-model assistance for research and evaluation."
+    predict_btn.click(
+        lambda image: make_report_files(predict_image(image)) if image is not None else (None, None),
+        inputs=[input_image], outputs=[report_json, report_csv],
     )
-    st.info(
-        "Qwen is a separate language model. It does not perform "
-        "the DenseNet image classification."
-    )
+    send_btn.click(chat_submit, inputs=[chat_input, chatbot], outputs=[chatbot, chat_input])
+    chat_input.submit(chat_submit, inputs=[chat_input, chatbot], outputs=[chatbot, chat_input])
+    clear_btn.click(lambda: [], outputs=[chatbot])
+    knowledge_search.change(search_records, inputs=[knowledge_search], outputs=[knowledge_table])
 
-    if QWEN_HOLDER["error"] is not None:
-        st.error(
-            f"Qwen failed to load: "
-            f"{type(QWEN_HOLDER['error']).__name__}: "
-            f"{QWEN_HOLDER['error']}"
-        )
-    elif not QWEN_HOLDER["ready"].is_set():
-        st.caption(
-            "Qwen is still loading in the background. "
-            "Your first message will wait until it is ready."
-        )
-
-    for message in st.session_state.messages:
-        with st.chat_message(message["role"]):
-            st.write(message["content"])
-
-    prompt = st.chat_input(
-        "Ask about PyTorch, metrics, or research methodology..."
-    )
-
-    if prompt:
-        handle_chat(prompt)
-
-    if st.button("Clear conversation"):
-        st.session_state.messages = [
-            {
-                "role": "assistant",
-                "content": (
-                    "Conversation cleared. What would you like to discuss?"
-                ),
-            }
-        ]
-        st.rerun()
-
-
-def handle_chat(prompt):
-    history = list(st.session_state.messages)
-
-    st.session_state.messages.append({"role": "user", "content": prompt})
-
-    with st.chat_message("user"):
-        st.write(prompt)
-
-    with st.chat_message("assistant"):
-        try:
-            response = st.write_stream(
-                stream_qwen(QWEN_HOLDER, prompt, history)
-            )
-        except Exception as exc:
-            st.error(
-                f"Qwen could not generate a response "
-                f"({type(exc).__name__}: {exc})."
-            )
-            return
-
-    text = response.strip() if isinstance(response, str) else str(response)
-
-    st.session_state.messages.append({
-        "role": "assistant",
-        "content": text or "The model returned an empty response.",
-    })
-
-
-def page_reports():
-    st.title("Reports")
-    st.caption("Export the latest DenseNet prediction.")
-
-    report = st.session_state.report
-
-    if report is None:
-        st.info(
-            "No prediction report is available yet. "
-            "Run a prediction on the Submissions page first."
-        )
-        return
-
-    # Present the report as a readable table rather than a raw JSON block.
-    report_rows = [
-        {"Field": "Predicted class", "Value": report.get("predicted_class", "—")},
-        {"Field": "Confidence (%)", "Value": report.get("confidence_percent", "—")},
-        {"Field": "Model", "Value": report.get("model", "—")},
-        {"Field": "Evaluated at", "Value": report.get("evaluated_at", "—")},
-        {"Field": "Research use only", "Value": report.get("research_use_only", "—")},
-    ]
-
-    st.subheader("Prediction summary")
-    st.dataframe(pd.DataFrame(report_rows), width="stretch", hide_index=True)
-
-    class_probabilities = report.get("class_probabilities", {})
-    if class_probabilities:
-        st.subheader("Class probabilities")
-        probability_table = pd.DataFrame(
-            [{"Class": label, "Score (%)": score}
-             for label, score in class_probabilities.items()]
-        )
-        st.dataframe(probability_table, width="stretch", hide_index=True)
-
-    st.download_button(
-        "Download report as CSV",
-        data=pd.DataFrame(report_rows).to_csv(index=False),
-        file_name="py18_prediction_report.csv",
-        mime="text/csv",
-        type="primary",
-    )
-
-
-def page_knowledge():
-    st.title("Knowledge store")
-    st.caption("Research records and evaluation artifacts.")
-
-    search = st.text_input(
-        "Search research records",
-        placeholder="Search by record name, type, or status",
-    )
-
-    densenet_status = f"Hugging Face repo: {DENSENET_REPO_ID}"
-    qwen_status = f"Hugging Face repo: {QWEN_MODEL_ID}"
-
-    records = pd.DataFrame([
-        {
-            "Record": "DenseNet-169 checkpoint",
-            "Type": "Model",
-            "Status": densenet_status,
-        },
-        {
-            "Record": "Qwen3 1.7B",
-            "Type": "Language model",
-            "Status": qwen_status,
-        },
-        {
-            "Record": "Dataset audit",
-            "Type": "Data quality",
-            "Status": "Not connected",
-        },
-    ])
-
-    if search.strip():
-        mask = records.astype(str).apply(
-            lambda column: column.str.contains(
-                search,
-                case=False,
-                na=False,
-                regex=False,
-            )
-        ).any(axis=1)
-        records = records[mask]
-
-    st.dataframe(records, width="stretch", hide_index=True)
-
-
-# =========================================================
-# SIDEBAR + ROUTER
-# =========================================================
-
-with st.sidebar:
-    st.markdown("## 🧪 PY18")
-    st.markdown("### Research Console")
-    st.caption("Researcher workspace")
-    st.divider()
-
-    for page_name in PAGES:
-        is_active = st.session_state.page == page_name
-
-        if st.button(
-            page_name,
-            key=f"nav_{page_name}",
-            width="stretch",
-            type="primary" if is_active else "secondary",
-        ):
-            st.session_state.page = page_name
-            st.rerun()
-
-    st.divider()
-    st.caption(
-        "Experimental research prototype. "
-        "Not validated for clinical diagnosis."
-    )
-
-
-st.warning(
-    "Research use only: These predictions are experimental "
-    "and must not be used to diagnose autism."
-)
-
-ROUTES = {
-    "Submissions": page_submissions,
-    "Compare experiments": page_compare,
-    "Research assistant": page_assistant,
-    "Reports": page_reports,
-    "Knowledge store": page_knowledge,
-}
-
-ROUTES[st.session_state.page]()
+if __name__ == "__main__":
+    demo.queue(max_size=16).launch()
