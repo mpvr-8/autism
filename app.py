@@ -25,13 +25,13 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-DENSENET_CHECKPOINTS = [
-    "/kaggle/working/best_densenet169.pth",
-    "/kaggle/working/densenet169_best.pth",
-    "/kaggle/input/densenet169/best_densenet169.pth",
-]
-
-QWEN_PATH = "/kaggle/input/models/qwen-lm/qwen-3/transformers/1.7b/1"
+DENSENET_REPO_ID = os.getenv(
+    "DENSENET_REPO_ID", "Mpvr/autism-densenet169"
+)
+QWEN_MODEL_ID = os.getenv(
+    "QWEN_MODEL_ID", "Mpvr/autism-qwen3-1.7b"
+)
+HF_TOKEN = os.getenv("HF_TOKEN") or None
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -274,10 +274,25 @@ if "report" not in st.session_state:
 # =========================================================
 
 def find_densenet_checkpoint():
-    for checkpoint in DENSENET_CHECKPOINTS:
-        if os.path.isfile(checkpoint):
-            return checkpoint
-    return None
+    """Download a DenseNet checkpoint from the configured Hugging Face repo."""
+    from huggingface_hub import hf_hub_download
+
+    errors = []
+    for filename in ("best_densenet169.pth", "densenet169_best.pth"):
+        try:
+            return hf_hub_download(
+                repo_id=DENSENET_REPO_ID,
+                filename=filename,
+                token=HF_TOKEN,
+            )
+        except Exception as exc:
+            errors.append(f"{filename}: {type(exc).__name__}: {exc}")
+
+    raise FileNotFoundError(
+        "Could not download a DenseNet checkpoint from "
+        f"{DENSENET_REPO_ID}. Checked both expected filenames. "
+        + " | ".join(errors)
+    )
 
 
 def extract_state_dict(checkpoint):
@@ -324,8 +339,8 @@ def load_densenet():
 
     if checkpoint_path is None:
         raise FileNotFoundError(
-            "No DenseNet-169 checkpoint was found. "
-            "Make sure the saved .pth file exists in Kaggle."
+            "No DenseNet-169 checkpoint could be downloaded. "
+            "Check the Hugging Face repository and uploaded checkpoint filenames."
         )
 
     checkpoint = torch.load(
@@ -401,7 +416,7 @@ def run_prediction(image):
     except FileNotFoundError:
         st.error(
             "DenseNet-169 checkpoint not found. "
-            "Ensure the checkpoint is available in Kaggle."
+            "Check the Hugging Face repository and checkpoint filenames."
         )
         return
 
@@ -439,24 +454,21 @@ def get_qwen_holder():
 
     def _load():
         try:
-            if not os.path.isfile(os.path.join(QWEN_PATH, "config.json")):
-                raise FileNotFoundError(
-                    "Qwen model folder not found. Check QWEN_PATH."
-                )
-
             from transformers import AutoTokenizer, AutoModelForCausalLM
 
+            # Download/cache the model files from Hugging Face Hub instead of
+            # expecting the Kaggle-only /kaggle/input path to exist at runtime.
             tokenizer = AutoTokenizer.from_pretrained(
-                QWEN_PATH,
-                local_files_only=True,
+                QWEN_MODEL_ID,
+                token=HF_TOKEN,
             )
 
             use_cuda = torch.cuda.is_available()
 
             model = AutoModelForCausalLM.from_pretrained(
-                QWEN_PATH,
+                QWEN_MODEL_ID,
+                token=HF_TOKEN,
                 torch_dtype=torch.float16 if use_cuda else torch.float32,
-                local_files_only=True,
                 low_cpu_mem_usage=True,
             )
 
@@ -822,11 +834,7 @@ def page_knowledge():
     densenet_status = (
         "Available" if find_densenet_checkpoint() else "Not found"
     )
-    qwen_status = (
-        "Local directory available"
-        if os.path.isdir(QWEN_PATH)
-        else "Local directory not found"
-    )
+    qwen_status = f"Hugging Face repo: {QWEN_MODEL_ID}"
 
     records = pd.DataFrame([
         {
