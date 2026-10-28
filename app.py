@@ -210,10 +210,10 @@ def run_prediction_ui(image):
             f"**Model:** DenseNet-169  \n"
             f"**Evaluated:** {result['evaluated_at']}"
         )
-        return summary, result, scores, json_path, csv_path
+        return summary, result, scores, json_path, csv_path, json_path, csv_path
     except Exception as exc:
         error = f"### Prediction failed\n{type(exc).__name__}: {exc}"
-        return error, {}, [], None, None
+        return error, {}, [], None, None, None, None
 
 
 def chat_submit(message, history):
@@ -344,11 +344,7 @@ with gr.Blocks(title="PY18 Research Console", theme=gr.themes.Soft(primary_hue="
 
     predict_btn.click(
         run_prediction_ui, inputs=[input_image],
-        outputs=[prediction_summary, prediction_json, score_table, download_json, download_csv],
-    )
-    predict_btn.click(
-        lambda image: make_report_files(predict_image(image)) if image is not None else (None, None),
-        inputs=[input_image], outputs=[report_json, report_csv],
+        outputs=[prediction_summary, prediction_json, score_table, download_json, download_csv, report_json, report_csv],
     )
     send_btn.click(chat_submit, inputs=[chat_input, chatbot], outputs=[chatbot, chat_input])
     chat_input.submit(chat_submit, inputs=[chat_input, chatbot], outputs=[chatbot, chat_input])
