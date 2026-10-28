@@ -831,9 +831,7 @@ def page_knowledge():
         placeholder="Search by record name, type, or status",
     )
 
-    densenet_status = (
-        "Available" if find_densenet_checkpoint() else "Not found"
-    )
+    densenet_status = f"Hugging Face repo: {DENSENET_REPO_ID}"
     qwen_status = f"Hugging Face repo: {QWEN_MODEL_ID}"
 
     records = pd.DataFrame([
