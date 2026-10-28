@@ -560,15 +560,8 @@ def stream_qwen(holder, question, conversation):
 
 
 # =========================================================
-# STARTUP ORDER: DenseNet first, then Qwen in background
-# =========================================================
-
-try:
-    load_densenet()
-except Exception:
-    pass
-
-QWEN_HOLDER = get_qwen_holder()
+# Keep startup lightweight: load models only when their features are used.
+QWEN_HOLDER = None
 
 
 # =========================================================
@@ -707,7 +700,13 @@ def page_compare():
 
 
 def page_assistant():
+    global QWEN_HOLDER
+
     st.title("Research assistant — Qwen3 1.7B")
+
+    if QWEN_HOLDER is None:
+        with st.spinner("Starting Qwen3 1.7B loader..."):
+            QWEN_HOLDER = get_qwen_holder()
     st.caption(
         "Local language-model assistance for research and evaluation."
     )
