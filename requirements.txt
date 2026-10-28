@@ -1,0 +1,15 @@
+# Core data science
+numpy
+pandas
+scikit-learn
+matplotlib
+Pillow
+tqdm
+
+# Deep learning
+torch
+torchvision
+
+# Web app / tunneling
+streamlit
+pyngrok
